@@ -206,3 +206,39 @@ test('no .nosync temp files are left behind', () => {
   walk(path.join(dir, '.history'));
   assert.deepEqual(leftovers, []);
 });
+
+test('a split NEO never saw is inferred from where the opening paragraph went', () => {
+  const dir = makeBook({ 'ch-a': '<p>Holston climbed the stairs slowly.</p><p>The airlock hissed open at dawn.</p>' });
+  const r1 = H.commit(dir, {});
+  writeCh(dir, 'ch-a', '<p>Holston climbed the stairs slowly.</p>');
+  writeCh(dir, 'ch-n', '<p>The airlock hissed open at dawn.</p>');
+  const m = meta(dir); m.chapterOrder = ['ch-a', 'ch-n']; setMeta(dir, m);
+  const r2 = H.commit(dir, { parent: r1.id }); // no hints passed
+  assert.deepEqual(r2.commit.hints, [{ op: 'split', from: 'ch-a', to: 'ch-n', inferred: true }]);
+  assert.equal(H.log(dir, { base: r2.id, chapterId: 'ch-n' }).entries.length, 2);
+});
+
+test('a merge NEO never saw is inferred; a copied paragraph is not a split', () => {
+  const dir = makeBook({ 'ch-a': '<p>Juliette worked in Mechanical.</p>', 'ch-b': '<p>The generator hummed like a living thing.</p>' });
+  const r1 = H.commit(dir, {});
+  writeCh(dir, 'ch-a', '<p>Juliette worked in Mechanical.</p><p>The generator hummed like a living thing.</p>');
+  const m = meta(dir); m.chapterOrder = ['ch-a']; setMeta(dir, m);
+  const r2 = H.commit(dir, { parent: r1.id });
+  assert.deepEqual(r2.commit.hints, [{ op: 'merge', from: 'ch-b', into: 'ch-a', inferred: true }]);
+
+  // a new chapter that merely quotes a paragraph still in ch-a
+  writeCh(dir, 'ch-c', '<p>Juliette worked in Mechanical.</p>');
+  const m2 = meta(dir); m2.chapterOrder = ['ch-a', 'ch-c']; setMeta(dir, m2);
+  const r3 = H.commit(dir, { parent: r2.id });
+  assert.deepEqual(r3.commit.hints, []);
+});
+
+test('explicit hints win over inference and are not duplicated', () => {
+  const dir = makeBook({ 'ch-a': '<p>Holston climbed the stairs slowly.</p><p>The airlock hissed open at dawn.</p>' });
+  const r1 = H.commit(dir, {});
+  writeCh(dir, 'ch-a', '<p>Holston climbed the stairs slowly.</p>');
+  writeCh(dir, 'ch-n', '<p>The airlock hissed open at dawn.</p>');
+  const m = meta(dir); m.chapterOrder = ['ch-a', 'ch-n']; setMeta(dir, m);
+  const r2 = H.commit(dir, { parent: r1.id, hints: [{ op: 'split', from: 'ch-a', to: 'ch-n' }] });
+  assert.deepEqual(r2.commit.hints, [{ op: 'split', from: 'ch-a', to: 'ch-n' }]);
+});

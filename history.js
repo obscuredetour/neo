@@ -266,6 +266,57 @@ function updateBranch(bookDir, id, patch) {
 }
 
 // ---------------------------------------------------------------------------
+// Lineage NEO didn't see happen (a crash before the hint was saved, or an
+// edit made in Pocket): a new chapter whose opening paragraph just left an
+// existing chapter was split from it; a vanished chapter whose opening now
+// sits inside another was merged into it.
+// ---------------------------------------------------------------------------
+const ENTITIES = { '&nbsp;': ' ', '&amp;': '&', '&lt;': '<', '&gt;': '>', '&quot;': '"', '&#39;': "'" };
+function paraTexts(html) {
+  const out = [];
+  const re = /<p\b([^>]*)>([\s\S]*?)<\/p>/gi;
+  let m;
+  while ((m = re.exec(String(html || '')))) {
+    if (/\bghost\b/.test(m[1])) continue; // outline placeholders aren't prose
+    const t = m[2].replace(/<[^>]+>/g, '').replace(/&[a-z#0-9]+;/gi, (e) => ENTITIES[e] || ' ')
+      .replace(/\s+/g, ' ').trim();
+    if (t.length >= 12) out.push(t); // skips *** and one-word lines
+  }
+  return out;
+}
+
+function inferHints(parentTree, tree, changed, known, readHtml) {
+  if (!parentTree) return [];
+  const hinted = new Set(known.map((h) => (h.op === 'split' ? h.to : h.from)));
+  const added = changed.added.filter((id) => !hinted.has(id));
+  const removed = changed.removed.filter((id) => !hinted.has(id));
+  if (!added.length && !removed.length) return [];
+  const cache = new Map();
+  const paras = (sha) => {
+    if (!sha) return new Set();
+    if (!cache.has(sha)) cache.set(sha, paraTexts(readHtml(sha)));
+    return cache.get(sha);
+  };
+  const asSet = (sha) => new Set(paras(sha));
+  // chapters present on both sides are the only possible other halves
+  const shared = tree.order.filter((id) => id in parentTree.chapters);
+  const out = [];
+  for (const id of added) {
+    const first = paras(tree.chapters[id])[0];
+    if (!first) continue;
+    const from = shared.find((p) => asSet(parentTree.chapters[p]).has(first) && !asSet(tree.chapters[p]).has(first));
+    if (from) out.push({ op: 'split', from, to: id, inferred: true });
+  }
+  for (const id of removed) {
+    const first = paras(parentTree.chapters[id])[0];
+    if (!first) continue;
+    const into = shared.find((q) => asSet(tree.chapters[q]).has(first) && !asSet(parentTree.chapters[q]).has(first));
+    if (into) out.push({ op: 'merge', from: id, into, inferred: true });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // Save a version
 // ---------------------------------------------------------------------------
 // opts: {message, kind: 'named'|'checkpoint'|'auto', auto, branch, parent,
@@ -301,6 +352,8 @@ function commit(bookDir, opts = {}) {
   const known = new Set([...Object.keys(wt.tree.chapters), ...Object.keys((parentTree && parentTree.chapters) || {})]);
   const hints = (opts.hints || []).filter((h) =>
     h && (h.op === 'split' || h.op === 'merge') && known.has(h.from) && known.has(h.to || h.into));
+  const readHtml = (sha) => (wt.files.has(sha) ? wt.files.get(sha).toString('utf8') : readObjectSync(hdir, sha, 'html'));
+  hints.push(...inferHints(parentTree, wt.tree, changed, hints, readHtml));
 
   const date = new Date().toISOString();
   const record = {
@@ -465,5 +518,6 @@ module.exports = {
   log,
   readTree,
   readBlob,
+  paraTexts,
   _caches: caches
 };

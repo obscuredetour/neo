@@ -119,3 +119,23 @@ test('diffTrees: deleting a chapter is not a reorder', () => {
   const b = { order: ['c1', 'c3'], chapters: { c1: 'a', c3: 'c' } };
   assert.equal(D.diffTrees(a, b).order, false);
 });
+
+test('diffParagraphs marks a paragraph moved unchanged as a move', () => {
+  const a = ['Holston climbed the stairs to his death.', 'The children laughed below him.', 'He reached the airlock at dawn.'];
+  const b = ['The children laughed below him.', 'He reached the airlock at dawn.', 'Holston climbed the stairs to his death.'];
+  const ops = D.diffParagraphs(a, b);
+  const del = ops.find((o) => o.op === 'del');
+  const ins = ops.find((o) => o.op === 'ins');
+  assert.equal(del.a, 0);
+  assert.equal(del.movedTo, 2);
+  assert.equal(ins.b, 2);
+  assert.equal(ins.movedFrom, 0);
+});
+
+test('short or repeated paragraphs are never called moves', () => {
+  const ops1 = D.diffParagraphs(['Yes.', 'The long middle paragraph stays put.'], ['The long middle paragraph stays put.', 'Yes.']);
+  assert.ok(ops1.every((o) => o.movedTo === undefined && o.movedFrom === undefined));
+  const same = 'This exact sentence appears more than once.';
+  const ops2 = D.diffParagraphs([same, 'Middle paragraph that never changes.', same], ['Middle paragraph that never changes.', same, same]);
+  assert.ok(ops2.every((o) => o.movedTo === undefined && o.movedFrom === undefined));
+});

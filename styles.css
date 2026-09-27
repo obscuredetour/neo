@@ -685,6 +685,9 @@ body.bright .spell-menu button { color: #eee; }
 }
 .h-p:hover .h-take, .h-take:focus { opacity: 1; }
 .h-take:hover { text-decoration: underline; }
+.h-p.h-moved { border-left: 2px solid #d8cfbb; padding-left: 10px; margin-left: -12px; }
+.h-moved-away { font-style: italic; }
+body.night .h-p.h-moved { border-left-color: #6b6150; }
 .h-compare { border-left-color: var(--accent); cursor: default; }
 .h-fmt { font-family: -apple-system, sans-serif; font-size: 11px; color: #bbb; }
 .h-note { font-family: -apple-system, sans-serif; font-size: 12px; color: #999; font-style: italic; padding: 6px 0; }

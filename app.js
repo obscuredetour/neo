@@ -1146,8 +1146,9 @@ function renderChapters() {
 }
 
 async function deleteChapterToDarlings(chId) {
-  snapshotStructure('chapter delete');
   const index = book.chapterOrder.indexOf(chId);
+  if (chapterText(chId).trim()) await historySafetySave('delete', `Before deleting Chapter ${index + 1}`);
+  snapshotStructure('chapter delete');
   const text = chapterText(chId).trim();
   if (text) {
     const bodyEl = document.querySelector(`.chapter[data-id="${chId}"] .chapter-body`);
@@ -3693,9 +3694,18 @@ function replaceCurrent() {
 }
 
 // Every chapter, front to back
-function replaceAllMatches() {
+async function replaceAllMatches() {
   const q = $('#search-input').value;
   if (!q) return;
+  // a replace-all that will change something first leaves a safety version
+  const needle = q.toLowerCase();
+  const hit = (chId) => {
+    const body = document.querySelector(`.chapter[data-id="${chId}"] .chapter-body`);
+    return !!body && body.textContent.toLowerCase().includes(needle);
+  };
+  if (book.chapterOrder.some(hit)) {
+    await historySafetySave('replace-all', `Before replacing “${q}” everywhere`);
+  }
   snapshotStructure('replace all');
   const rep = $('#replace-input').value;
   const re = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
@@ -5404,6 +5414,17 @@ async function historyOnOpen() {
   }
 }
 
+// A quiet safety version before something big replaces words. Skipped
+// when history is off, or nothing changed since the last version.
+async function historySafetySave(auto, message) {
+  if (!HAS_HISTORY || !book) return;
+  try {
+    await historyCommitNow({ kind: 'auto', auto, message });
+  } catch (err) {
+    window.neo.logError('history safety save: ' + err);
+  }
+}
+
 function historyReport(r, ok) {
   if (!r) return;
   if (r.error) toast('Couldn’t save a version — details are in the error log');
@@ -5797,7 +5818,9 @@ function historyParaDiff(oldHtml, newHtml, opts = {}) {
     if (ops[k].op === 'eq') { k++; continue; }
     const dels = [], ins = [];
     for (; k < ops.length && ops[k].op !== 'eq'; k++) {
-      if (ops[k].op === 'del') dels.push(k); else if (ops[k].op === 'ins') ins.push(k);
+      const o = ops[k];
+      if (o.op === 'del' && o.movedTo === undefined) dels.push(k);
+      else if (o.op === 'ins' && o.movedFrom === undefined) ins.push(k);
     }
     dels.forEach((dk, i) => { if (ins[i] !== undefined) counterpart[dk] = ins[i]; });
   }
@@ -5819,7 +5842,15 @@ function historyParaDiff(oldHtml, newHtml, opts = {}) {
       return;
     }
     flushSkip();
-    if (o.op === 'del') {
+    if (o.op === 'del' && o.movedTo !== undefined) {
+      // moved, not cut: a quiet pointer here, the paragraph where it landed
+      const there = ops.findIndex((x) => x.op === 'ins' && x.b === o.movedTo);
+      const words = text(A[o.a]);
+      const snippet = words.length > 60 ? words.slice(0, 57).trimEnd() + '…' : words;
+      out += `<div class="h-skip h-moved-away">“${escHtml(snippet)}” moved further ${there > k ? 'down' : 'up'}</div>`;
+    } else if (o.op === 'ins' && o.movedFrom !== undefined) {
+      out += `<p class="${cls(B[o.b])} h-moved">${escHtml(text(B[o.b]))} <span class="h-fmt">(moved here)</span></p>`;
+    } else if (o.op === 'del') {
       out += `<p class="${cls(A[o.a])}"><del class="h-del">${escHtml(text(A[o.a]))}</del>${take(k, 'Put this paragraph back into your book, here')}${swap(k)}</p>`;
     } else if (o.op === 'ins') {
       out += `<p class="${cls(B[o.b])}"><ins class="h-ins">${escHtml(text(B[o.b]))}</ins></p>`;
@@ -6124,7 +6155,7 @@ async function historyApplyTree(tree, notes, html) {
   const leaving = book.chapterOrder.filter((id) => !(id in tree.chapters));
   // a queued save must not write a chapter back over the restored text
   for (const k of Object.keys(saveTimers)) {
-    if (k === 'meta') continue;
+    if (k === 'meta' || k === 'search') continue;
     clearTimeout(saveTimers[k]);
     delete saveTimers[k];
   }

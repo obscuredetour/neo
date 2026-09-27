@@ -103,7 +103,35 @@
       }
       pairRun(dels, ins, aTexts, bTexts, out);
     }
-    return out;
+    return detectMoves(out, aKeys, bKeys, aTexts);
+  }
+
+  // A paragraph taken out in one place and put back unchanged in another
+  // was moved, not rewritten. Both halves keep their op (so reconstruction
+  // still holds) and point at each other: del.movedTo = b, ins.movedFrom = a.
+  // Only paragraphs that occur once on each side, and aren't trivially
+  // short, count — "Yes." turning up twice is not a move.
+  const MIN_MOVE_CHARS = 20;
+  function detectMoves(ops, aKeys, bKeys, aTexts) {
+    const dels = new Map(), ins = new Map();
+    const add = (m, key, k) => { if (!m.has(key)) m.set(key, []); m.get(key).push(k); };
+    ops.forEach((o, k) => {
+      if (o.op === 'del') add(dels, aKeys[o.a], k);
+      else if (o.op === 'ins') add(ins, bKeys[o.b], k);
+    });
+    const countA = new Map(), countB = new Map();
+    for (const key of aKeys) countA.set(key, (countA.get(key) || 0) + 1);
+    for (const key of bKeys) countB.set(key, (countB.get(key) || 0) + 1);
+    for (const [key, ds] of dels) {
+      const is = ins.get(key);
+      if (ds.length !== 1 || !is || is.length !== 1) continue;
+      if (countA.get(key) !== 1 || countB.get(key) !== 1) continue;
+      const d = ops[ds[0]], i = ops[is[0]];
+      if (String(aTexts[d.a] || '').trim().length < MIN_MOVE_CHARS) continue;
+      d.movedTo = i.b;
+      i.movedFrom = d.a;
+    }
+    return ops;
   }
 
   // Within one changed run, pair deletions with insertions in order when
