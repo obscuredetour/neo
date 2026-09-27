@@ -10,6 +10,7 @@
   --muted: #8a8a8a;
   --pane: #202020;
   --red: #c0392b;
+  --green: #5f8c4c;
   --body-font: Georgia, "Times New Roman", serif;
   --dropcap-font: "Didot", "Bodoni 72", Georgia, serif;
 }
@@ -618,6 +619,75 @@ body.bright .spell-menu button { color: #eee; }
 .darling button:hover { border-color: var(--accent); color: var(--ink); }
 .darlings-empty { text-align: center; color: #b9b4a8; font-style: italic; padding: 60px 0; }
 
+/* --- Version history --- */
+.h-bar {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 22px;
+  font-family: -apple-system, sans-serif; font-size: 12px; color: #999;
+}
+.h-bar select {
+  background: none; border: 1px solid #ccc; border-radius: 4px; color: inherit;
+  font-size: 12px; padding: 3px 6px; max-width: 260px;
+}
+.h-bar .h-grow { flex: 1; }
+.h-bar button, .h-commit button, .h-diff-bar button, .h-more {
+  background: none; border: 1px solid #ccc; border-radius: 4px;
+  font-size: 11px; padding: 3px 10px; color: #777; cursor: pointer;
+}
+.h-bar button:hover, .h-commit button:hover, .h-diff-bar button:hover, .h-more:hover { border-color: var(--accent); color: var(--ink); }
+.h-diff-bar button.active { border-color: var(--accent); color: var(--ink); }
+.h-status { font-family: -apple-system, sans-serif; font-size: 12px; color: #999; margin: -10px 0 18px; }
+.h-commit {
+  border: 1px solid #e3ddcf; border-left: 3px solid var(--accent);
+  border-radius: 4px; padding: 12px 16px; margin-bottom: 12px; cursor: pointer;
+}
+.h-commit .h-msg { font-family: Georgia, serif; font-size: 15px; line-height: 1.4; }
+.h-commit.checkpoint { border-left-color: #d8cfbb; }
+.h-commit.checkpoint .h-msg { color: #777; font-style: italic; }
+.h-commit.auto { border-left-color: #e3ddcf; opacity: 0.55; padding: 8px 16px; }
+.h-commit.auto .h-msg { font-size: 13px; color: #777; }
+.h-commit.open { opacity: 1; cursor: default; }
+.h-commit .d-meta {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  margin-top: 6px; font-family: -apple-system, sans-serif; font-size: 11px; color: #999;
+}
+.h-here { color: var(--accent); }
+.h-fold {
+  font-family: -apple-system, sans-serif; font-size: 11px; color: #aaa;
+  margin: -4px 0 12px 4px; cursor: pointer; user-select: none;
+}
+.h-fold:hover { color: var(--accent); }
+.h-diff { margin-top: 14px; cursor: auto; }
+.h-diff-bar {
+  display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+  font-family: -apple-system, sans-serif; font-size: 11px; color: #999; margin-bottom: 10px;
+}
+.h-diff-bar .h-grow { flex: 1; }
+.h-legend { font-family: -apple-system, sans-serif; font-size: 11px; color: #aaa; margin-bottom: 12px; }
+.h-ch { border-top: 1px solid #eee7d8; padding-top: 10px; margin-top: 10px; }
+.h-ch-head {
+  display: flex; justify-content: space-between; align-items: center; cursor: pointer;
+  font-family: -apple-system, sans-serif; font-size: 12px; color: #777; user-select: none;
+}
+.h-ch-head:hover .h-ch-name { color: var(--ink); }
+.h-ch-body { font-family: var(--body-font); font-size: 15px; line-height: 1.6; margin-top: 8px; }
+.h-p { margin: 0 0 8px; }
+.h-p.h-eq { color: #999; }
+.h-p.h-poetry { font-style: italic; padding: 0 30px; }
+.h-p.h-break { text-align: center; color: #aaa; }
+.h-skip { font-family: -apple-system, sans-serif; font-size: 11px; color: #bbb; margin: 0 0 8px; }
+.h-del { color: var(--red); text-decoration: line-through; text-decoration-color: rgba(192, 57, 43, 0.5); background: rgba(192, 57, 43, 0.06); }
+.h-ins { color: var(--green); text-decoration: none; background: rgba(95, 140, 76, 0.1); }
+.h-del + .h-ins { margin-left: 0.3em; }
+.h-fmt { font-family: -apple-system, sans-serif; font-size: 11px; color: #bbb; }
+.h-note { font-family: -apple-system, sans-serif; font-size: 12px; color: #999; font-style: italic; padding: 6px 0; }
+body.night .h-commit, body.night .h-ch { border-color: #3a3835; }
+body.night .h-commit { border-left-color: var(--accent); }
+body.night .h-commit.checkpoint { border-left-color: #6b6150; }
+body.night .h-commit.auto { border-left-color: #3a3835; }
+body.night .h-p.h-eq { color: #777; }
+body.night .h-ins { color: #8fb67a; }
+body.night .h-del { color: #d97b6c; }
+
 /* --- Left nav pane --- */
 #nav-hotzone { position: fixed; left: 0; top: 0; bottom: 40px; width: 18px; z-index: 60; }
 #nav-pane {
@@ -753,6 +823,9 @@ body.bright .spell-menu button { color: #eee; }
 #search-count { font-size: 11px; color: var(--muted); min-width: 52px; text-align: center; }
 
 #goal-counter.goal-met { color: var(--accent); }
+#history-dot { color: var(--accent); font-size: 16px; line-height: 12px; }
+#history-branch { color: var(--accent); }
+.tab.history { margin-left: 4px; }
 #import-btn {
   background: none; border: 1px solid #3a3a3a; color: var(--muted);
   border-radius: 6px; padding: 5px 12px; font-size: 12px;

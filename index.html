@@ -101,6 +101,7 @@
         <div id="aux-editor" contenteditable="true" spellcheck="false"></div>
         <div id="outline-list" hidden></div>
         <div id="darlings-list" hidden></div>
+        <div id="history-list" hidden></div>
       </div>
     </main>
 
@@ -112,8 +113,11 @@
         <div class="tab" data-tab="notes">Notes</div>
         <div class="tab" data-tab="outline">Outline</div>
         <div class="tab darlings" data-tab="darlings" title="Drag any selection here. It's saved, not gone.">Darlings</div>
+        <div class="tab history" data-tab="history" title="Every saved version of this book">History</div>
       </div>
       <div id="counters">
+        <span id="history-branch" hidden title="The draft you're writing in — click for History"></span>
+        <span id="history-dot" hidden>&#8226;</span>
         <span id="goal-counter" title="Today's words — click for goals, sprints, and your progress chart"></span>
         <span id="pos-counter"></span>
         <span id="word-counter" title="Click to cycle book / chapter word count"></span>
@@ -139,6 +143,7 @@
   <div id="hint" hidden></div>
 
   <script src="covers.js"></script>
+  <script src="history-diff.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

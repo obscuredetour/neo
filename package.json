@@ -7,6 +7,7 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
+    "test": "node --test \"test/*.test.js\"",
     "package": "electron-builder --mac",
     "package:win": "electron-builder --win",
     "package:linux": "electron-builder --linux",
@@ -90,7 +91,8 @@
       "!dist/**",
       "!Backups/**",
       "!*.md",
-      "!.github/**"
+      "!.github/**",
+      "!test/**"
     ]
   },
   "author": "Hugh Howey",

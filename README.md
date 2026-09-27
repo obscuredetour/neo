@@ -39,6 +39,10 @@ One Enter: new paragraph. Two: a `***` section break. Three: a new chapter. The 
 
 The writing advice is "kill your darlings" — but I say: *keep the bodies*. Drag any beautiful-but-in-the-way passage onto the Darlings tab. It leaves your manuscript but isn't lost. Darlings restore to the exact spot it came from. More like zombies than darlings.
 
+**Version history** 
+
+Every book keeps its own history, like git for chapters. ⌘S saves a quiet checkpoint and ⌘⇧S saves a version with a name ("Flood scene, first full pass"). NEO also saves a safety version whenever you close a book and before any restore. The History tab lists every version. Click one to see what changed, word by word, then restore a single chapter or the whole book. Restoring never erases anything: it saves a new version on top, and ⌘Z undoes it. Right-click a chapter heading to see only that chapter's history, including where it came from if you split it off another chapter.
+
 **Placeholders** 
 
 Mid-flow and need a name, a fact, a date? ⌘⇧X drops a mark and a sticky note. The left panel shows a red dot on every chapter that you need to get back to. The right panel will list all these to-do items.
@@ -69,7 +73,7 @@ Continuous autosave, daily zip backups kept for two weeks, everything stored as 
 
 ## Your files
 
-Everything lives in `~/Documents/NEO Library` — one folder per book, chapters as readable HTML, metadata as JSON. Open them in your favorite text editor.
+Everything lives in `~/Documents/NEO Library` — one folder per book, chapters as readable HTML, metadata as JSON. Open them in your favorite text editor. Version history sits in each book's hidden `.history` folder, and it's plain files too.
 
 ## Building from source (for the eggheads):
 
@@ -88,7 +92,7 @@ The app is very simple: an Electron shell (`main.js`), a preload bridge (`preloa
 
 ## Roadmap (things I'm dreaming up but may never get to):
 
-Chapter version history · manuscript format for agent submissions (Times New Roman, double-spaced, address block, just to make Kristin Nelson happy) · global end matter that updates every book at once (same for copyright pages, bios, etc).
+Alternate drafts (branches) for version history · manuscript format for agent submissions (Times New Roman, double-spaced, address block, just to make Kristin Nelson happy) · global end matter that updates every book at once (same for copyright pages, bios, etc).
 
 ## Contributing
 

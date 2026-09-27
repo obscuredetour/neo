@@ -14,8 +14,9 @@ Good territory: bug fixes, performance, accessibility, better import/export prec
 - `preload.js` — the bridge. Every capability the UI has is listed here.
 - `app.js` — the entire UI: bookshelf, editor, outline, search, goals.
 - `styles.css` — all styling, with CSS variables at the top.
+- `history.js` — version history storage (main process). `history-diff.js` — the paragraph/word diff, shared by main and the UI.
 
-Books are folders of plain files in `~/Documents/NEO Library`: `book.json` for metadata, `chapters/*.html` for text, JSON files for darlings/stickies.
+Books are folders of plain files in `~/Documents/NEO Library`: `book.json` for metadata, `chapters/*.html` for text, JSON files for darlings/stickies. Version history lives in `.history/`. Its objects and commits are named by their own SHA-256 and never change, so synced copies can't conflict. `book.json`'s `history` field records which version the book was last saved from.
 
 ## Ground rules
 
@@ -27,6 +28,7 @@ Books are folders of plain files in `~/Documents/NEO Library`: `book.json` for m
 ## Practical bits
 
 - Run from source: `npm install && npm start` (needs Node.js).
+- Run the tests: `npm test` (Node's built-in runner; covers `history.js` and `history-diff.js`).
 - Keep PRs focused — one feature or fix each.
 - Describe the writer-facing behavior in your PR, not just the code. Think like an author, not a programmer!
 - Bug reports: please include your OS, what you did, what happened, and the tail of `~/Documents/NEO Library/neo-errors.log` if it's a crash.

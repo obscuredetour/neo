@@ -45,11 +45,17 @@ Kill your darlings, they say. Well, it never gets easy. You're a writer, and we 
 
 Instead of deleting it, select it and drag it down onto the **Darlings** tab at the bottom of the screen. It leaves your manuscript, but it's saved forever. If you change your mind, you can restore what you deleted to the exact spot it came from. Kill without remorse. You can now resurrect your beloveds.
 
+**History**
+
+NEO saves as you type, so you never *have* to save. But when you reach a point worth remembering, press ⌘S and NEO keeps a checkpoint of the whole book. ⌘⇧S does the same and lets you name it: "Before I killed off the mayor." NEO also keeps versions on its own, when you close a book and before any restore, so nothing slips away. A small gold dot in the bottom bar means you've written something since the last version.
+
+The **History** tab lists every version. Click one to see exactly what changed, struck-through red for words that went and green for words that came. From there you can restore one chapter or the whole book. Restoring never throws anything away. Your current text is saved as a version first, and ⌘Z undoes the restore. To see the history of just one chapter, right-click its heading.
+
 **The hidden panels**
 
 The screen stays distraction-free until you need something. Roll your mouse to the **left edge** and the chapter list slides out — every chapter, its word count, a note field where you can jot what happens in it. You can outline an entire novel from this panel if you want. Push to the **right edge** for your notes and comments. The little ☉ here pins it open if you're doing a revision pass.
 
-Along the bottom: tabs for your Notes, your Outline, and your Darlings. Plus a word count. Click the word count to toggle between the whole book and just this chapter.
+Along the bottom: tabs for your Notes, your Outline, your Darlings, and your History. Plus a word count. Click the word count to toggle between the whole book and just this chapter.
 
 The UI is deliberately difficult to see unless you roll your mouse over the semi-hidden options. If you prefer to brighten things up, there's an option for you under the VIEW menu.
 

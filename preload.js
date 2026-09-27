@@ -20,6 +20,17 @@ contextBridge.exposeInMainWorld('neo', {
   readJSON: (bookId, name, fallback) => ipcRenderer.invoke('json:read', bookId, name, fallback),
   writeJSON: (bookId, name, data) => ipcRenderer.invoke('json:write', bookId, name, data),
 
+  historyStatus: (bookId, head) => ipcRenderer.invoke('history:status', bookId, head),
+  historyCommit: (bookId, opts) => ipcRenderer.invoke('history:commit', bookId, opts),
+  historyLog: (bookId, opts) => ipcRenderer.invoke('history:log', bookId, opts),
+  historyReadCommit: (bookId, id) => ipcRenderer.invoke('history:readCommit', bookId, id),
+  historyReadTree: (bookId, sha) => ipcRenderer.invoke('history:readTree', bookId, sha),
+  historyReadBlob: (bookId, sha, ext) => ipcRenderer.invoke('history:readBlob', bookId, sha, ext),
+  historyBranches: (bookId) => ipcRenderer.invoke('history:branches', bookId),
+  historyBranchCreate: (bookId, opts) => ipcRenderer.invoke('history:branchCreate', bookId, opts),
+  historyBranchRename: (bookId, id, name) => ipcRenderer.invoke('history:branchRename', bookId, id, name),
+  historyBranchArchive: (bookId, id, archived) => ipcRenderer.invoke('history:branchArchive', bookId, id, archived),
+
   exportSave: (payload) => ipcRenderer.invoke('export:save', payload),
   emailDraft: (payload) => ipcRenderer.invoke('email:draft', payload),
   logError: (msg) => ipcRenderer.invoke('log:error', msg),

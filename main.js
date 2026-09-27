@@ -6,6 +6,7 @@ const { app, BrowserWindow, ipcMain, dialog, Menu, MenuItem, utilityProcess } = 
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
+const history = require('./history.js');
 
 // macOS Chromium's "smart delete" also removes whitespace around a deleted
 // selection, and that pass can duplicate characters. Deletes stay literal.
@@ -29,6 +30,18 @@ function readSettings() {
 function writeSettings(obj) {
   fs.mkdirSync(path.dirname(settingsPath()), { recursive: true });
   fs.writeFileSync(settingsPath(), JSON.stringify(obj, null, 2));
+}
+
+// Which machine saved a version — per install, never synced
+let deviceIdCache = null;
+function deviceId() {
+  if (deviceIdCache) return deviceIdCache;
+  const settings = readSettings();
+  if (!settings.deviceId) {
+    settings.deviceId = 'd-' + Math.random().toString(36).slice(2, 8);
+    try { writeSettings(settings); } catch (err) { logError('settings', err); }
+  }
+  return (deviceIdCache = settings.deviceId);
 }
 
 // File → Library Folder…: point NEO at any folder, or back at the default.
@@ -243,6 +256,41 @@ ipcMain.handle('json:write', (_e, bookId, name, data) => {
   writeJSON(path.join(bookDir(bookId), name + '.json'), data);
   return true;
 });
+
+// Version history (see history.js). Failures come back as {error} rather
+// than throwing — history must never get between a writer and their words.
+function historyCall(label, fn) {
+  return async (_e, ...args) => {
+    try {
+      return await fn(...args);
+    } catch (err) {
+      logError('history ' + label, err);
+      return { error: String((err && err.message) || err) };
+    }
+  };
+}
+ipcMain.handle('history:status', historyCall('status', (bookId, head) => history.status(bookDir(bookId), head || {})));
+ipcMain.handle('history:commit', historyCall('commit', (bookId, opts) =>
+  history.commit(bookDir(bookId), { ...(opts || {}), device: deviceId() })));
+ipcMain.handle('history:log', historyCall('log', (bookId, opts) => history.log(bookDir(bookId), opts || {})));
+ipcMain.handle('history:readCommit', historyCall('readCommit', (bookId, id) => history.readCommit(bookDir(bookId), id)));
+// a damaged version is worth a line in the error log; a missing or
+// still-downloading one isn't
+const noteDamage = (what, sha) => (r) => {
+  if (r && r.error === 'corrupt') logError('history', `damaged ${what} ${sha}`);
+  return r;
+};
+ipcMain.handle('history:readTree', historyCall('readTree', (bookId, sha) =>
+  history.readTree(bookDir(bookId), sha).then(noteDamage('tree', sha))));
+ipcMain.handle('history:readBlob', historyCall('readBlob', (bookId, sha, ext) =>
+  history.readBlob(bookDir(bookId), sha, ext).then(noteDamage('object', sha))));
+ipcMain.handle('history:branches', historyCall('branches', (bookId) => history.listBranches(bookDir(bookId))));
+ipcMain.handle('history:branchCreate', historyCall('branchCreate', (bookId, opts) =>
+  history.createBranch(bookDir(bookId), { ...(opts || {}), device: deviceId() })));
+ipcMain.handle('history:branchRename', historyCall('branchRename', (bookId, id, name) =>
+  history.updateBranch(bookDir(bookId), id, { name: String(name || '').slice(0, 80) })));
+ipcMain.handle('history:branchArchive', historyCall('branchArchive', (bookId, id, archived) =>
+  history.updateBranch(bookDir(bookId), id, { archived: archived !== false })));
 
 ipcMain.handle('book:delete', async (_e, bookId, title) => {
   const win = BrowserWindow.getFocusedWindow();
@@ -780,6 +828,8 @@ async function dailyBackup() {
     const walk = (dir, rel) => {
       for (const name of fs.readdirSync(dir)) {
         if (rel === '' && skip.has(name)) continue;
+        // half-written temp files (version history, JSON saves) aren't words
+        if (name.endsWith('.nosync') || name.endsWith('.tmp')) continue;
         const full = path.join(dir, name);
         const relPath = rel ? rel + '/' + name : name;
         const stat = fs.statSync(full);
@@ -967,6 +1017,18 @@ function buildMenu() {
     {
       label: 'File',
       submenu: [
+        {
+          label: 'Save Checkpoint',
+          accelerator: 'CmdOrCtrl+S',
+          click: () => sendToWindow({ type: 'historyCheckpoint' })
+        },
+        {
+          label: 'Save Version…',
+          accelerator: 'CmdOrCtrl+Shift+S',
+          click: () => sendToWindow({ type: 'historySave' })
+        },
+        { label: 'Version History', click: () => sendToWindow({ type: 'historyOpen' }) },
+        { type: 'separator' },
         {
           label: 'Export',
           submenu: [

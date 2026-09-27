@@ -12,6 +12,13 @@ let currentTab = 'manuscript';
 let currentChapterId = null; // chapter the caret/scroll is in
 let wordMode = 'book';       // 'book' | 'chapter'
 let saveTimers = {};
+// Version history needs the desktop bridge and the diff script; Pocket has
+// neither yet, so everything history-shaped stays out of its way.
+const HAS_HISTORY = !!(window.neo && window.neo.historyCommit) && typeof NeoDiff !== 'undefined';
+let historyHints = [];       // chapter splits/merges since the last version
+let historyState = null;     // latest status from history.js: {enabled, dirty, last, …}
+let historyStatusTimer = null;
+let historyView = { scope: null, open: null, mode: 'now', limit: 100, unfolded: new Set() };
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -1001,6 +1008,7 @@ async function openBook(bookId) {
   if (!book) return;
   currentChapterId = null; // never carry a chapter reference across books
   undoStack = [];
+  historyReset();
   chapterHTML = {};
   for (const chId of book.chapterOrder) {
     chapterHTML[chId] = await window.neo.readChapter(bookId, chId);
@@ -1043,6 +1051,10 @@ async function openBook(bookId) {
       });
     }
   }
+
+  // history starts (or catches up on changes made elsewhere) once the
+  // book has settled — never while the page is still finding its place
+  if (HAS_HISTORY) setTimeout(historyOnOpen, 1500);
 
   // the Enter hint shows once per library, ever
   if (!library.hintShown) {
@@ -1156,12 +1168,16 @@ async function deleteChapterToDarlings(chId) {
 
 async function chapterMenu(chId, index) {
   const words = countWords(chapterText(chId));
+  const options = [];
+  if (HAS_HISTORY) options.push({ label: 'History of this chapter', desc: 'Every saved version, and what changed in each.', value: 'history' });
+  options.push({ label: 'Delete chapter', desc: words ? 'Its words move to Darlings, recoverable anytime.' : 'Nothing to save — it just goes.', danger: true, value: 'delete' });
   const choice = await optionModal(
     `Chapter ${index + 1}`,
     words ? `${words.toLocaleString()} words.` : 'This chapter is empty.',
-    [{ label: 'Delete chapter', desc: words ? 'Its words move to Darlings, recoverable anytime.' : 'Nothing to save — it just goes.', danger: true, value: 'delete' }]
+    options
   );
   if (choice === 'delete') await deleteChapterToDarlings(chId);
+  if (choice === 'history') openHistory(chId);
 }
 
 /* ================================================================== */
@@ -1348,6 +1364,7 @@ function chapterStartBackspace(e, body, chId) {
   const keepScroll = $('#paper-scroll').scrollTop;
   chapterHTML[prevId] = captureBody(prevBody) + captureBody(body);
   window.neo.writeChapter(book.id, prevId, chapterHTML[prevId]);
+  historyHints.push({ op: 'merge', from: chId, into: prevId });
   for (const s of stickies) if (s.chapterId === chId) s.chapterId = prevId;
   window.neo.writeJSON(book.id, 'stickies', stickies);
   for (const d of darlings) if (d.chapterId === chId) d.chapterId = prevId;
@@ -1572,6 +1589,7 @@ function splitChapterAt(body, chId, block, sel) {
   syncChapter(body, chId);
   const idx = book.chapterOrder.indexOf(chId);
   const newId = createChapterAt(idx + 1);
+  historyHints.push({ op: 'split', from: chId, to: newId });
   chapterHTML[newId] = parts.join('') || '<p><br></p>';
   window.neo.writeChapter(book.id, newId, chapterHTML[newId]);
   const keepScroll = $('#paper-scroll').scrollTop;
@@ -2784,8 +2802,15 @@ function switchTab(name) {
   auxEditor.hidden = true;
   dList.hidden = true;
   oList.hidden = true;
+  const hList = $('#history-list');
+  if (hList) hList.hidden = true;
 
-  if (name === 'darlings') {
+  if (name === 'history' && hList) {
+    $('#aux-title').textContent = 'History';
+    hList.hidden = false;
+    renderHistory();
+    returnTo();
+  } else if (name === 'darlings') {
     $('#aux-title').textContent = 'Darlings';
     dList.hidden = false;
     renderDarlings();
@@ -3311,6 +3336,7 @@ function scheduleChapterSave(chId) {
   saveTimers[chId] = setTimeout(() => {
     if (!book) return; // the book closed before the timer fired; flushAllSaves already wrote it
     window.neo.writeChapter(book.id, chId, chapterHTML[chId] || '');
+    scheduleHistoryStatus();
   }, 800);
 }
 
@@ -3320,22 +3346,26 @@ function scheduleMetaSave() {
 }
 async function saveMeta() {
   if (book) await window.neo.writeBookMeta(book.id, book);
+  scheduleHistoryStatus();
 }
 
+// Resolves once every write has landed — version history saves right after.
 function flushAllSaves() {
-  if (!book) return;
+  if (!book) return Promise.resolve();
   // remember where you were for next session
   book.lastPosition = {
     chapterId: currentChapterId,
     scroll: $('#paper-scroll').scrollTop
   };
+  const writes = [];
   for (const chId of book.chapterOrder) {
     if (chapterHTML[chId] !== undefined) {
-      window.neo.writeChapter(book.id, chId, chapterHTML[chId]);
+      writes.push(window.neo.writeChapter(book.id, chId, chapterHTML[chId]));
     }
   }
   flushAux();
-  saveMeta();
+  writes.push(saveMeta());
+  return Promise.all(writes);
 }
 
 window.addEventListener('beforeunload', flushAllSaves);
@@ -3344,7 +3374,12 @@ window.addEventListener('blur', () => { if (book) flushAllSaves(); });
 setInterval(() => { if (book) flushAllSaves(); }, 20000);
 
 async function backToShelf() {
+  // closing the book keeps a safety version of anything unsaved to history
+  if (HAS_HISTORY && book) {
+    try { await historyCommitNow({ kind: 'auto', auto: 'close', message: 'Closed the book' }); } catch (err) { window.neo.logError('history close: ' + err); }
+  }
   flushAllSaves();
+  historyReset();
   tabPlaces = {};
   book = null;
   currentChapterId = null;
@@ -3480,6 +3515,7 @@ async function structuralUndo() {
   renderStickies();
   if (currentTab === 'darlings') renderDarlings();
   if (currentTab === 'outline') renderOutline();
+  if (currentTab === 'history') renderHistory();
   updateCounters();
   restoreCaret(snap.caret); // back to work, no announcement
   if (snap.rejoin) rejoinAtCaret();
@@ -4583,6 +4619,8 @@ function showHelp() {
 
       <div class="help-sec">Files</div>
       <div class="help-grid">
+        ${HAS_HISTORY ? row(K('⌘S', 'Ctrl+S'), 'Save a checkpoint in History (NEO already saves every keystroke)') : ''}
+        ${HAS_HISTORY ? row(K('⌘⇧S', 'Ctrl+Shift+S'), 'Save a named version — “Flood scene, first full pass”') : ''}
         ${row(K('⌘E', 'Ctrl+E'), 'Email a timestamped draft to yourself')}
         ${row(K('⌘⇧I', 'Ctrl+Shift+I'), 'Import .docx / .txt / .md manuscripts')}
         ${row('File → Export', 'txt · md · html · pdf · docx · epub')}
@@ -5229,7 +5267,626 @@ async function showAbout() {
   bd.querySelector('.m-ok').focus();
 }
 
+/* ================================================================== */
+/*  VERSION HISTORY                                                    */
+/*  Git-like versions of the whole book; history.js keeps them as      */
+/*  plain files in the book folder. ⌘S saves a quiet checkpoint, ⌘⇧S   */
+/*  a named version, and NEO saves a safety version on its own before  */
+/*  anything that replaces words. Restoring never rewrites history —   */
+/*  it saves new versions on top.                                      */
+/* ================================================================== */
+
+const KCHECK = K('⌘S', 'Ctrl+S');
+const HISTORY_ERRORS = {
+  missing: 'This version’s files are missing from the book folder.',
+  corrupt: 'This version can’t be read — its file is damaged. A daily backup in Backups/ may have it.',
+  syncing: 'This version is still downloading from iCloud — try again shortly.'
+};
+const historyErrorText = (code) => HISTORY_ERRORS[code] || 'History couldn’t be read — details are in the error log.';
+
+if (!HAS_HISTORY) {
+  const t = document.querySelector('.tab[data-tab="history"]');
+  if (t) t.remove();
+}
+for (const id of ['#history-dot', '#history-branch']) {
+  const el = document.querySelector(id);
+  if (el) el.onclick = () => openHistory(null);
+}
+
+function historyHead() {
+  if (!book.history || typeof book.history !== 'object') book.history = { branch: 'b-main', base: null };
+  return book.history;
+}
+
+function historyReset() {
+  historyHints = [];
+  historyState = null;
+  historyView = { scope: null, open: null, mode: 'now', limit: 100, unfolded: new Set() };
+  clearTimeout(historyStatusTimer);
+  paintHistoryDot();
+}
+
+function openHistory(chId) {
+  if (!HAS_HISTORY || !book || $('#editor-view').hidden) return;
+  historyView.scope = chId || null;
+  historyView.open = null;
+  historyView.limit = 100;
+  if (currentTab === 'history') renderHistory();
+  else switchTab('history');
+}
+
+// Save a version of the book as it stands once every pending write has
+// landed. Resolves to history.js's answer: {id} · {unchanged} · {error}.
+async function historyCommitNow(opts) {
+  if (!HAS_HISTORY || !book) return null;
+  const b = book;
+  const head = historyHead();
+  const hints = historyHints.slice();
+  const words = bookWordCount();
+  await flushAllSaves();
+  const r = await window.neo.historyCommit(b.id, {
+    ...opts,
+    branch: head.branch,
+    parent: head.base,
+    join: true, // a draft saved on two devices comes back together here
+    hints,
+    author: b.author || null,
+    words
+  });
+  if (!r || r.error) {
+    if (r && r.error) window.neo.logError('history commit: ' + r.error);
+    return r;
+  }
+  historyHints = historyHints.filter((h) => !hints.includes(h));
+  if (head.base !== r.id) {
+    head.base = r.id;
+    await window.neo.writeBookMeta(b.id, b);
+  }
+  if (book === b) refreshHistoryStatus();
+  return r;
+}
+
+async function refreshHistoryStatus() {
+  if (!HAS_HISTORY || !book) return;
+  const b = book;
+  const st = await window.neo.historyStatus(b.id, historyHead());
+  if (book !== b) return;
+  historyState = st && !st.error ? st : null;
+  paintHistoryDot();
+}
+
+// the dot follows the disk, a few seconds behind the typing
+function scheduleHistoryStatus() {
+  if (!HAS_HISTORY || !book) return;
+  clearTimeout(historyStatusTimer);
+  historyStatusTimer = setTimeout(refreshHistoryStatus, 4000);
+}
+
+function paintHistoryDot() {
+  const dot = $('#history-dot');
+  const chip = $('#history-branch');
+  const st = HAS_HISTORY && book ? historyState : null;
+  if (dot) {
+    dot.hidden = !(st && st.enabled && st.dirty);
+    if (!dot.hidden) {
+      dot.title = (st.last
+        ? `Changes since “${historyLabel(st.last)}” · ${historyAgo(st.last.date)}`
+        : 'Changes since the last version') + ` — ${KCHECK} saves a checkpoint`;
+    }
+  }
+  if (chip) {
+    chip.hidden = !(st && st.branch && st.branch !== 'b-main');
+    if (!chip.hidden) chip.textContent = 'Draft: ' + st.branchName;
+  }
+}
+
+// On open: the first time, history begins with a baseline; after that,
+// anything that changed while NEO wasn't watching (a quit, Pocket, another
+// Mac) is kept as a version before today's writing starts.
+async function historyOnOpen() {
+  if (!HAS_HISTORY || !book) return;
+  const b = book;
+  const st = await window.neo.historyStatus(b.id, historyHead());
+  if (book !== b) return;
+  if (!st || st.error) { historyState = null; paintHistoryDot(); return; }
+  if (!st.enabled) {
+    await historyCommitNow({ kind: 'auto', auto: 'init', message: 'Baseline — the book when history began' });
+  } else if (st.dirty) {
+    await historyCommitNow({ kind: 'auto', auto: 'resume', message: 'Changes from last session or another device' });
+  } else {
+    historyState = st;
+    paintHistoryDot();
+  }
+}
+
+function historyReport(r, ok) {
+  if (!r) return;
+  if (r.error) toast('Couldn’t save a version — details are in the error log');
+  else if (r.unchanged) toast('No changes since the last version', 2500);
+  else toast(ok, 2500);
+  if (currentTab === 'history') renderHistory();
+}
+
+// ⌘S: no questions asked
+async function historyCheckpoint() {
+  if (!HAS_HISTORY || !book || $('#editor-view').hidden) return;
+  historyReport(await historyCommitNow({ kind: 'checkpoint', message: '' }), 'Checkpoint saved');
+}
+
+// ⌘⇧S: a version with a name
+async function historySaveNamed() {
+  if (!HAS_HISTORY || !book || $('#editor-view').hidden) return;
+  const caret = captureCaret();
+  const title = historyState && historyState.diverged
+    ? 'Save a version (it also joins the copy saved on another device)'
+    : 'Save a version';
+  const msg = await askInput(title, 'What changed? e.g. Flood scene, first full pass');
+  if (caret) restoreCaret(caret);
+  if (msg === null) return;
+  historyReport(
+    await historyCommitNow({ kind: msg ? 'named' : 'checkpoint', message: msg }),
+    msg ? 'Version saved' : 'Checkpoint saved'
+  );
+}
+
+// ---- labels ----
+const historyLabel = (c) => c.message || (c.kind === 'checkpoint' ? 'Checkpoint' : 'Saved version');
+
+function historyAgo(iso) {
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (s < 60) return 'just now';
+  if (s < 3600) return Math.round(s / 60) + ' min ago';
+  if (s < 86400) return Math.round(s / 3600) + ' h ago';
+  const d = Math.round(s / 86400);
+  if (d < 7) return d === 1 ? 'yesterday' : d + ' days ago';
+  return new Date(iso).toLocaleDateString();
+}
+
+function historyWhen(iso) {
+  const d = new Date(iso);
+  const sameYear = d.getFullYear() === new Date().getFullYear();
+  return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: sameYear ? undefined : 'numeric' }) +
+    ', ' + d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
+}
+
+function historyChapterName(chId, order = book.chapterOrder, titles = book.chapterTitles || {}) {
+  const i = order.indexOf(chId);
+  if (i < 0) return 'a removed chapter';
+  return `Chapter ${i + 1}` + (titles[chId] ? ` — ${titles[chId]}` : '');
+}
+
+// "Ch 3, 7 · 1 removed" in today's chapter numbers
+function historyTouched(c) {
+  const ch = c.changed || {};
+  const ids = [...new Set([...(ch.modified || []), ...(ch.added || []), ...(ch.titles || [])])];
+  if (c.auto === 'init') return ids.length === 1 ? '1 chapter' : `${ids.length} chapters`;
+  const nums = ids.map((id) => book.chapterOrder.indexOf(id)).filter((i) => i >= 0).map((i) => i + 1).sort((a, b) => a - b);
+  const parts = [];
+  if (nums.length > 4) parts.push(`${nums.length} chapters`);
+  else if (nums.length) parts.push('Ch ' + nums.join(', '));
+  if ((ch.removed || []).length) parts.push(`${ch.removed.length} removed`);
+  if (ch.order) parts.push('reordered');
+  if (!parts.length && ch.notes) parts.push('notes');
+  return parts.join(' · ');
+}
+
+// ---- the History tab ----
+let historyRenderSeq = 0;
+
+async function renderHistory() {
+  const wrap = $('#history-list');
+  if (!wrap || !book) return;
+  if (!HAS_HISTORY) {
+    wrap.innerHTML = '<div class="darlings-empty">Version history isn’t available here yet.</div>';
+    return;
+  }
+  const seq = ++historyRenderSeq;
+  const b = book;
+  await flushAllSaves();
+  const head = historyHead();
+  const [st, lg] = await Promise.all([
+    window.neo.historyStatus(b.id, head),
+    window.neo.historyLog(b.id, { branch: head.branch, base: head.base, chapterId: historyView.scope, limit: historyView.limit })
+  ]);
+  if (seq !== historyRenderSeq || book !== b || currentTab !== 'history') return;
+  if (st && !st.error) { historyState = st; paintHistoryDot(); }
+
+  wrap.innerHTML = '';
+  const bar = document.createElement('div');
+  bar.className = 'h-bar';
+  const scope = document.createElement('select');
+  scope.title = 'Show every version, or only the ones that touched one chapter';
+  scope.innerHTML = '<option value="">Whole book</option>' +
+    book.chapterOrder.map((id) => `<option value="${id}">${escHtml(historyChapterName(id))}</option>`).join('');
+  if (historyView.scope && !book.chapterOrder.includes(historyView.scope)) {
+    scope.insertAdjacentHTML('beforeend', `<option value="${historyView.scope}">A removed chapter</option>`);
+  }
+  scope.value = historyView.scope || '';
+  scope.onchange = () => {
+    historyView.scope = scope.value || null;
+    historyView.open = null;
+    historyView.limit = 100;
+    renderHistory();
+  };
+  const grow = document.createElement('span');
+  grow.className = 'h-grow';
+  const draft = document.createElement('span');
+  draft.textContent = st && st.branchName ? st.branchName : '';
+  const save = document.createElement('button');
+  save.textContent = 'Save version…';
+  save.title = `Name this version (${K('⌘⇧S', 'Ctrl+Shift+S')})`;
+  save.onclick = historySaveNamed;
+  bar.append(scope, grow, draft, save);
+  wrap.appendChild(bar);
+
+  const note = (text, cls = 'h-status') => {
+    const el = document.createElement('div');
+    el.className = cls;
+    el.textContent = text;
+    wrap.appendChild(el);
+  };
+  if (!st || st.error) note(historyErrorText());
+  else if (st.enabled && st.dirty) {
+    note((st.last ? `Unsaved changes since “${historyLabel(st.last)}”, ${historyAgo(st.last.date)}` : 'Unsaved changes') +
+      ` — ${KCHECK} saves a checkpoint.`);
+  }
+  if (!lg || lg.error) { note(historyErrorText(), 'darlings-empty'); return; }
+  if (!lg.entries.length) {
+    note(historyView.scope ? 'No saved version has touched this chapter yet.' : `No versions yet — ${KCHECK} saves one.`, 'darlings-empty');
+    return;
+  }
+
+  // runs of safety saves fold away; the open version never hides
+  const entries = lg.entries;
+  const foldable = (c) => c.kind === 'auto' && c.id !== historyView.open && !(st && c.id === st.base);
+  for (let i = 0; i < entries.length;) {
+    if (foldable(entries[i])) {
+      let j = i;
+      while (j < entries.length && foldable(entries[j])) j++;
+      const run = entries.slice(i, j);
+      if (run.length >= 2 && !historyView.unfolded.has(run[0].id)) {
+        const fold = document.createElement('div');
+        fold.className = 'h-fold';
+        fold.textContent = `${run.length} safety saves ▸`;
+        fold.onclick = () => { historyView.unfolded.add(run[0].id); renderHistory(); };
+        wrap.appendChild(fold);
+        i = j;
+        continue;
+      }
+    }
+    wrap.appendChild(historyCard(entries[i], st));
+    i++;
+  }
+  if (lg.more) {
+    const more = document.createElement('button');
+    more.className = 'h-more';
+    more.textContent = 'Show older versions';
+    more.onclick = () => { historyView.limit += 100; renderHistory(); };
+    wrap.appendChild(more);
+  }
+  if (lg.truncated) note('Older versions are still arriving from iCloud.');
+}
+
+function historyCard(c, st) {
+  const el = document.createElement('div');
+  const open = historyView.open === c.id;
+  el.className = `h-commit ${c.kind || 'named'}` + (open ? ' open' : '');
+  const bits = [historyWhen(c.date)];
+  if (typeof c.words === 'number' && typeof c.prevWords === 'number' && c.words !== c.prevWords) {
+    const d = c.words - c.prevWords;
+    bits.push((d > 0 ? '+' : '−') + Math.abs(d).toLocaleString() + ' words');
+  }
+  const touched = historyTouched(c);
+  if (touched) bits.push(touched);
+  const msg = document.createElement('div');
+  msg.className = 'h-msg';
+  msg.textContent = historyLabel(c);
+  const meta = document.createElement('div');
+  meta.className = 'd-meta';
+  meta.innerHTML = `<span>${escHtml(bits.join(' · '))}</span>` +
+    (st && c.id === st.base ? `<span class="h-here">${st.dirty ? 'your latest version' : 'matches your book now'}</span>` : '');
+  el.append(msg, meta);
+  el.onclick = (e) => {
+    if (e.target.closest('.h-diff')) return;
+    historyView.open = open ? null : c.id;
+    historyView.mode = 'now';
+    renderHistory();
+  };
+  if (open) {
+    const d = document.createElement('div');
+    d.className = 'h-diff';
+    el.appendChild(d);
+    renderHistoryDiff(d, c);
+  }
+  return el;
+}
+
+// One side of a comparison: chapter order, titles, and each chapter's html
+function historyTreeSide(bookId, t) {
+  return {
+    order: t.tree.order,
+    titles: t.tree.titles || {},
+    html: async (id) => {
+      const sha = t.tree.chapters[id];
+      if (!sha) return null;
+      const r = await window.neo.historyReadBlob(bookId, sha, 'html');
+      if (r.error) throw new Error(r.error);
+      return r.content;
+    }
+  };
+}
+
+async function renderHistoryDiff(el, c) {
+  const b = book;
+  const mode = historyView.mode;
+  el.innerHTML = '<div class="h-note">Reading this version…</div>';
+  const mine = await window.neo.historyReadTree(b.id, c.tree);
+  if (book !== b || !el.isConnected) return;
+  if (mine.error) { el.innerHTML = `<div class="h-note">${escHtml(historyErrorText(mine.error))}</div>`; return; }
+
+  let oldSide, newSide, changed, legend;
+  if (mode === 'now') {
+    await flushAllSaves();
+    const st = await window.neo.historyStatus(b.id, { branch: historyHead().branch, base: c.id });
+    if (book !== b || !el.isConnected) return;
+    if (st.error) { el.innerHTML = `<div class="h-note">${escHtml(historyErrorText())}</div>`; return; }
+    oldSide = historyTreeSide(b.id, mine);
+    newSide = {
+      order: book.chapterOrder.slice(),
+      titles: { ...(book.chapterTitles || {}) },
+      html: async (id) => (id in chapterHTML ? chapterHTML[id] : null)
+    };
+    changed = st.dirty ? st.changed : null;
+    legend = 'Struck through: only in this version. Green: only in your book now.';
+  } else {
+    const parentId = (c.parents || [])[0];
+    let parentTree = null;
+    if (parentId) {
+      const p = await window.neo.historyReadCommit(b.id, parentId);
+      const t = p && !p.error ? await window.neo.historyReadTree(b.id, p.tree) : { error: 'syncing' };
+      if (book !== b || !el.isConnected) return;
+      if (t.error) { el.innerHTML = `<div class="h-note">${escHtml(historyErrorText(t.error))}</div>`; return; }
+      parentTree = t;
+    }
+    oldSide = parentTree ? historyTreeSide(b.id, parentTree) : { order: [], titles: {}, html: async () => null };
+    newSide = historyTreeSide(b.id, mine);
+    changed = c.changed;
+    legend = parentId ? 'Struck through: taken out in this version. Green: added.' : 'The first version: everything in it is new.';
+  }
+
+  el.innerHTML = '';
+  const bar = document.createElement('div');
+  bar.className = 'h-diff-bar';
+  for (const [m, label] of [['now', 'Compare with now'], ['parent', 'What changed in this version']]) {
+    const btn = document.createElement('button');
+    btn.textContent = label;
+    btn.classList.toggle('active', m === mode);
+    btn.onclick = () => { historyView.mode = m; renderHistoryDiff(el, c); };
+    bar.appendChild(btn);
+  }
+  const grow = document.createElement('span');
+  grow.className = 'h-grow';
+  bar.appendChild(grow);
+  if (!(mode === 'now' && !changed)) {
+    const all = document.createElement('button');
+    all.textContent = 'Restore whole book…';
+    all.onclick = () => historyRestoreBook(c);
+    bar.appendChild(all);
+  }
+  el.appendChild(bar);
+
+  const ids = [];
+  if (changed) {
+    const ch = new Set([...changed.modified, ...changed.added, ...changed.titles]);
+    for (const id of newSide.order) if (ch.has(id)) ids.push(id);
+    for (const id of changed.removed) ids.push(id);
+  }
+  if (!ids.length) {
+    const msg = mode === 'now'
+      ? 'Your book matches this version exactly.'
+      : (changed && (changed.order || changed.notes) ? 'Only the chapter order or outline notes changed in this version.' : 'Nothing in the chapters changed in this version.');
+    el.insertAdjacentHTML('beforeend', `<div class="h-note">${msg}</div>`);
+    return;
+  }
+  el.insertAdjacentHTML('beforeend', `<div class="h-legend">${legend}</div>`);
+
+  const inThisVersion = (id) => !!mine.tree.chapters[id];
+  for (const id of ids) {
+    const removed = !newSide.order.includes(id);
+    const added = !oldSide.order.includes(id);
+    const box = document.createElement('div');
+    box.className = 'h-ch';
+    const headEl = document.createElement('div');
+    headEl.className = 'h-ch-head';
+    const name = document.createElement('span');
+    name.className = 'h-ch-name';
+    name.textContent = removed
+      ? `${historyChapterName(id, oldSide.order, oldSide.titles)} (${mode === 'now' ? 'not in your book now' : 'removed'})`
+      : historyChapterName(id, newSide.order, newSide.titles) + (added ? (mode === 'now' ? ' (not in this version)' : ' (new)') : '');
+    headEl.appendChild(name);
+    if (inThisVersion(id)) {
+      const restore = document.createElement('button');
+      restore.textContent = 'Restore this chapter';
+      restore.title = 'Put this chapter back the way it was in this version. Your current text is saved as a version first.';
+      restore.onclick = (e) => { e.stopPropagation(); historyRestoreChapter(c, id); };
+      headEl.appendChild(restore);
+    }
+    const body = document.createElement('div');
+    body.className = 'h-ch-body';
+    body.hidden = true;
+    let loaded = false;
+    const expand = async () => {
+      body.hidden = !body.hidden;
+      if (body.hidden || loaded) return;
+      loaded = true;
+      body.innerHTML = '<div class="h-note">…</div>';
+      try {
+        const [a, n] = await Promise.all([oldSide.html(id), newSide.html(id)]);
+        let html = historyParaDiffHtml(a || '', n || '');
+        const t0 = oldSide.titles[id] || '', t1 = newSide.titles[id] || '';
+        if (t0 !== t1 && !added && !removed) {
+          html = `<div class="h-note">Title: <del class="h-del">${escHtml(t0 || 'untitled')}</del> → <ins class="h-ins">${escHtml(t1 || 'untitled')}</ins></div>` + html;
+        }
+        body.innerHTML = html;
+      } catch (err) {
+        body.innerHTML = `<div class="h-note">${escHtml(historyErrorText(err.message))}</div>`;
+      }
+    };
+    headEl.onclick = expand;
+    box.append(headEl, body);
+    el.appendChild(box);
+    if (ids.length <= 3) expand();
+  }
+}
+
+// Paragraph diff with word-level marks inside revised paragraphs. Long
+// unchanged stretches collapse, keeping one paragraph of context each side.
+function historyParaDiffHtml(oldHtml, newHtml) {
+  const A = parasFromHtml(oldHtml), B = parasFromHtml(newHtml);
+  const key = (p) => (p.sceneBreak ? '⁂' : p.html);
+  const text = (p) => (p.sceneBreak ? '* * *' : p.text);
+  const ops = NeoDiff.diffParagraphs(A.map(key), B.map(key), A.map(text), B.map(text));
+  if (ops.every((o) => o.op === 'eq')) return '<div class="h-note">No differences in the text.</div>';
+  const changedAt = ops.map((o) => o.op !== 'eq');
+  const cls = (p) => 'h-p' + (p.sceneBreak ? ' h-break' : '') + (p.poetry ? ' h-poetry' : '');
+  let out = '', skipped = 0;
+  const flushSkip = () => {
+    if (skipped) out += `<div class="h-skip">… ${skipped} unchanged paragraph${skipped === 1 ? '' : 's'}</div>`;
+    skipped = 0;
+  };
+  ops.forEach((o, k) => {
+    if (o.op === 'eq') {
+      if (!changedAt[k - 1] && !changedAt[k + 1]) { skipped++; return; }
+      flushSkip();
+      out += `<p class="${cls(B[o.b])} h-eq">${escHtml(text(B[o.b]))}</p>`;
+      return;
+    }
+    flushSkip();
+    if (o.op === 'del') {
+      out += `<p class="${cls(A[o.a])}"><del class="h-del">${escHtml(text(A[o.a]))}</del></p>`;
+    } else if (o.op === 'ins') {
+      out += `<p class="${cls(B[o.b])}"><ins class="h-ins">${escHtml(text(B[o.b]))}</ins></p>`;
+    } else {
+      const words = NeoDiff.diffWords(text(A[o.a]), text(B[o.b]));
+      const inner = words.map((w) => (w.op === 'eq' ? escHtml(w.text) : `<${w.op} class="h-${w.op}">${escHtml(w.text)}</${w.op}>`)).join('');
+      const fmtOnly = words.every((w) => w.op === 'eq');
+      out += `<p class="${cls(B[o.b])}">${inner}${fmtOnly ? ' <span class="h-fmt">(formatting changed)</span>' : ''}</p>`;
+    }
+  });
+  flushSkip();
+  return out;
+}
+
+// ---- restoring ----
+async function historyRestoreChapter(c, chId) {
+  const b = book;
+  const t = await window.neo.historyReadTree(b.id, c.tree);
+  if (t.error) { toast(historyErrorText(t.error)); return; }
+  const sha = t.tree.chapters[chId];
+  const blob = sha ? await window.neo.historyReadBlob(b.id, sha, 'html') : { error: 'missing' };
+  if (blob.error) { toast(historyErrorText(blob.error)); return; }
+  if (book !== b) return;
+
+  await historyCommitNow({ kind: 'auto', auto: 'restore', message: 'Before restoring a chapter' });
+  if (book !== b) return;
+  snapshotStructure('restore chapter');
+  if (!book.chapterOrder.includes(chId)) {
+    // a deleted chapter comes back where it used to be, as near as it can
+    const at = Math.max(0, Math.min(t.tree.order.indexOf(chId), book.chapterOrder.length));
+    book.chapterOrder.splice(at, 0, chId);
+  }
+  clearTimeout(saveTimers[chId]);
+  delete saveTimers[chId];
+  chapterHTML[chId] = blob.content;
+  book.chapterTitles = book.chapterTitles || {};
+  if (t.tree.titles && t.tree.titles[chId]) book.chapterTitles[chId] = t.tree.titles[chId];
+  else delete book.chapterTitles[chId];
+  if (t.notes) {
+    // the chapter's outline lines and comments come back with its words
+    book.chapterNotes = book.chapterNotes || {};
+    book.sectionNotes = book.sectionNotes || {};
+    const cn = t.notes.chapterNotes || {}, sn = t.notes.sectionNotes || {};
+    if (cn[chId] != null) book.chapterNotes[chId] = cn[chId]; else delete book.chapterNotes[chId];
+    if (sn[chId] != null) book.sectionNotes[chId] = sn[chId]; else delete book.sectionNotes[chId];
+    const have = new Set(stickies.map((s) => s.id));
+    for (const s of t.notes.stickies || []) {
+      if (!have.has(s.id) && blob.content.includes(`data-sid="${s.id}"`)) stickies.push({ ...s, chapterId: chId });
+    }
+  }
+  await window.neo.writeChapter(b.id, chId, chapterHTML[chId]);
+  await window.neo.writeJSON(b.id, 'stickies', stickies);
+  await saveMeta();
+  renderChapters();
+  renderStickies();
+  reconcileMarks();
+  updateCounters();
+  const name = `Chapter ${book.chapterOrder.indexOf(chId) + 1}`;
+  await historyCommitNow({ kind: 'named', message: `Restored ${name} from “${historyLabel(c)}”`, restoredFrom: c.id });
+  toast(`${name} restored — ${KZ} undoes it`);
+  if (currentTab === 'history') renderHistory();
+}
+
+async function historyRestoreBook(c) {
+  const ok = await optionModal(
+    'Restore the whole book?',
+    `Every chapter goes back to “${escHtml(historyLabel(c))}” (${escHtml(historyWhen(c.date))}). Your book as it is now is saved as a version first, so nothing is lost.`,
+    [{ label: 'Restore whole book', value: 'yes' }]
+  );
+  if (ok !== 'yes') return;
+  const b = book;
+  const t = await window.neo.historyReadTree(b.id, c.tree);
+  if (t.error) { toast(historyErrorText(t.error)); return; }
+  // read every chapter first: a version that can't be read in full is never half-applied
+  const html = {};
+  for (const id of t.tree.order) {
+    const r = await window.neo.historyReadBlob(b.id, t.tree.chapters[id], 'html');
+    if (r.error) { toast(historyErrorText(r.error)); return; }
+    html[id] = r.content;
+  }
+  if (book !== b) return;
+  await historyCommitNow({ kind: 'auto', auto: 'restore', message: 'Before restoring the whole book' });
+  if (book !== b) return;
+  snapshotStructure('restore book');
+  await historyApplyTree(t.tree, t.notes, html);
+  await historyCommitNow({ kind: 'named', message: `Restored the whole book to “${historyLabel(c)}”`, restoredFrom: c.id });
+  toast(`Book restored — ${KZ} undoes it`);
+  if (currentTab === 'history') renderHistory();
+}
+
+// Make the open book match a tree: order, titles, notes, comments, words.
+// Modeled on structuralUndo, which it must stay undoable by.
+async function historyApplyTree(tree, notes, html) {
+  const b = book;
+  const leaving = book.chapterOrder.filter((id) => !(id in tree.chapters));
+  // a queued save must not write a chapter back over the restored text
+  for (const k of Object.keys(saveTimers)) {
+    if (k === 'meta') continue;
+    clearTimeout(saveTimers[k]);
+    delete saveTimers[k];
+  }
+  book.chapterOrder = tree.order.slice();
+  book.chapterTitles = { ...(tree.titles || {}) };
+  if (notes) {
+    book.chapterNotes = notes.chapterNotes || {};
+    book.sectionNotes = notes.sectionNotes || {};
+    stickies = notes.stickies || [];
+  }
+  chapterHTML = { ...html };
+  wordCache = {};
+  for (const id of book.chapterOrder) await window.neo.writeChapter(b.id, id, chapterHTML[id]);
+  for (const id of leaving) await window.neo.deleteChapter(b.id, id);
+  await window.neo.writeJSON(b.id, 'stickies', stickies);
+  await saveMeta();
+  if (!book.chapterOrder.includes(currentChapterId)) currentChapterId = null;
+  renderChapters();
+  renderStickies();
+  updateCounters();
+}
+
 window.neo.onMenu(async (msg) => {
+  if (msg.type === 'historyCheckpoint') historyCheckpoint();
+  if (msg.type === 'historySave') historySaveNamed();
+  if (msg.type === 'historyOpen') openHistory(null);
   if (msg.type === 'help') showHelp();
   if (msg.type === 'about') showAbout();
   if (msg.type === 'checkUpdate') checkForUpdate();
