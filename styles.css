@@ -678,6 +678,14 @@ body.bright .spell-menu button { color: #eee; }
 .h-del { color: var(--red); text-decoration: line-through; text-decoration-color: rgba(192, 57, 43, 0.5); background: rgba(192, 57, 43, 0.06); }
 .h-ins { color: var(--green); text-decoration: none; background: rgba(95, 140, 76, 0.1); }
 .h-del + .h-ins { margin-left: 0.3em; }
+.h-take {
+  background: none; border: none; padding: 0 0 0 4px; cursor: pointer;
+  font-family: -apple-system, sans-serif; font-size: 11px; color: var(--accent);
+  opacity: 0; transition: opacity 0.12s ease;
+}
+.h-p:hover .h-take, .h-take:focus { opacity: 1; }
+.h-take:hover { text-decoration: underline; }
+.h-compare { border-left-color: var(--accent); cursor: default; }
 .h-fmt { font-family: -apple-system, sans-serif; font-size: 11px; color: #bbb; }
 .h-note { font-family: -apple-system, sans-serif; font-size: 12px; color: #999; font-style: italic; padding: 6px 0; }
 body.night .h-commit, body.night .h-ch { border-color: #3a3835; }

@@ -51,6 +51,8 @@ NEO saves as you type, so you never *have* to save. But when you reach a point w
 
 The **History** tab lists every version. Click one to see exactly what changed, struck-through red for words that went and green for words that came. From there you can restore one chapter or the whole book. Restoring never throws anything away. Your current text is saved as a version first, and ⌘Z undoes the restore. To see the history of just one chapter, right-click its heading.
 
+Not sure about a change? Start a **draft**. Pick "New draft from here…" in the History tab's drafts menu, or "New draft from here…" on any old version, and write away. Your original draft stays exactly as it was, and you can switch back to it from the same menu. "Compare with another draft" puts two drafts side by side. Hover over a struck-through paragraph and click *take this* to bring it into the draft you're in.
+
 **The hidden panels**
 
 The screen stays distraction-free until you need something. Roll your mouse to the **left edge** and the chapter list slides out — every chapter, its word count, a note field where you can jot what happens in it. You can outline an entire novel from this panel if you want. Push to the **right edge** for your notes and comments. The little ☉ here pins it open if you're doing a revision pass.

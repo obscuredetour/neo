@@ -43,6 +43,8 @@ The writing advice is "kill your darlings" — but I say: *keep the bodies*. Dra
 
 Every book keeps its own history, like git for chapters. ⌘S saves a quiet checkpoint and ⌘⇧S saves a version with a name ("Flood scene, first full pass"). NEO also saves a safety version whenever you close a book and before any restore. The History tab lists every version. Click one to see what changed, word by word, then restore a single chapter or the whole book. Restoring never erases anything: it saves a new version on top, and ⌘Z undoes it. Right-click a chapter heading to see only that chapter's history, including where it came from if you split it off another chapter.
 
+Want to try a darker ending without wrecking the one you have? Start a **draft** from any version (git would call it a branch). Switch between drafts from the History tab, and a small label in the bottom bar reminds you which one you're in. "Compare with another draft" shows exactly how two drafts differ, and "take this" carries a single paragraph across. Nothing merges on its own: you decide what moves.
+
 **Placeholders** 
 
 Mid-flow and need a name, a fact, a date? ⌘⇧X drops a mark and a sticky note. The left panel shows a red dot on every chapter that you need to get back to. The right panel will list all these to-do items.
@@ -92,7 +94,7 @@ The app is very simple: an Electron shell (`main.js`), a preload bridge (`preloa
 
 ## Roadmap (things I'm dreaming up but may never get to):
 
-Alternate drafts (branches) for version history · manuscript format for agent submissions (Times New Roman, double-spaced, address block, just to make Kristin Nelson happy) · global end matter that updates every book at once (same for copyright pages, bios, etc).
+Manuscript format for agent submissions (Times New Roman, double-spaced, address block, just to make Kristin Nelson happy) · global end matter that updates every book at once (same for copyright pages, bios, etc).
 
 ## Contributing
 

@@ -150,6 +150,11 @@ test('tips: linear, diverged, joined, and a fresh draft', () => {
   assert.equal(list[1].name, 'Darker ending');
   H.updateBranch(dir, b.id, { name: 'Darkest ending' });
   assert.equal(H.listBranches(dir)[1].name, 'Darkest ending');
+  H.updateBranch(dir, b.id, { archived: true });
+  const archived = H.listBranches(dir)[1];
+  assert.equal(archived.archived, true);
+  assert.deepEqual(archived.tips, [r5.id]); // archiving keeps every version
+  assert.throws(() => H.updateBranch(dir, 'b-nope', { name: 'x' }));
 });
 
 test('log is newest first, filters by chapter, and follows a split back', () => {

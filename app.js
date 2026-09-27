@@ -18,7 +18,7 @@ const HAS_HISTORY = !!(window.neo && window.neo.historyCommit) && typeof NeoDiff
 let historyHints = [];       // chapter splits/merges since the last version
 let historyState = null;     // latest status from history.js: {enabled, dirty, last, …}
 let historyStatusTimer = null;
-let historyView = { scope: null, open: null, mode: 'now', limit: 100, unfolded: new Set() };
+let historyView = { scope: null, open: null, mode: 'now', limit: 100, unfolded: new Set(), compare: null };
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -4663,6 +4663,9 @@ function safeName(s) {
 function parasFromHtml(html) {
   const holder = document.createElement('div');
   holder.innerHTML = html || '';
+  // remember each paragraph's place among all of them, so version history
+  // can find the live paragraph a diff line came from
+  holder.querySelectorAll('p').forEach((p, i) => { p._neoIdx = i; });
   // an unwritten outline section is a ghost paragraph plus the scene break
   // NEO planted for it; neither belongs in a book
   holder.querySelectorAll('p.ghost[data-sec-id]').forEach((g) => {
@@ -4682,6 +4685,8 @@ function parasFromHtml(html) {
       return t;
     }).join('');
     return {
+      idx: p._neoIdx,
+      outer: p.outerHTML,
       sceneBreak,
       poetry,
       text: p.innerText.replace(/\u00a0/g, ' ').trim(),
@@ -5301,7 +5306,7 @@ function historyHead() {
 function historyReset() {
   historyHints = [];
   historyState = null;
-  historyView = { scope: null, open: null, mode: 'now', limit: 100, unfolded: new Set() };
+  historyView = { scope: null, open: null, mode: 'now', limit: 100, unfolded: new Set(), compare: null };
   clearTimeout(historyStatusTimer);
   paintHistoryDot();
 }
@@ -5484,12 +5489,15 @@ async function renderHistory() {
   const b = book;
   await flushAllSaves();
   const head = historyHead();
-  const [st, lg] = await Promise.all([
+  const [st, lg, brs] = await Promise.all([
     window.neo.historyStatus(b.id, head),
-    window.neo.historyLog(b.id, { branch: head.branch, base: head.base, chapterId: historyView.scope, limit: historyView.limit })
+    window.neo.historyLog(b.id, { branch: head.branch, base: head.base, chapterId: historyView.scope, limit: historyView.limit }),
+    window.neo.historyBranches(b.id)
   ]);
   if (seq !== historyRenderSeq || book !== b || currentTab !== 'history') return;
   if (st && !st.error) { historyState = st; paintHistoryDot(); }
+  const drafts = Array.isArray(brs) ? brs : [];
+  historyView.branchNames = Object.fromEntries(drafts.map((d) => [d.id, d.name]));
 
   wrap.innerHTML = '';
   const bar = document.createElement('div');
@@ -5510,8 +5518,7 @@ async function renderHistory() {
   };
   const grow = document.createElement('span');
   grow.className = 'h-grow';
-  const draft = document.createElement('span');
-  draft.textContent = st && st.branchName ? st.branchName : '';
+  const draft = historyDraftSelect(drafts, st);
   const save = document.createElement('button');
   save.textContent = 'Save version…';
   save.title = `Name this version (${K('⌘⇧S', 'Ctrl+Shift+S')})`;
@@ -5526,9 +5533,16 @@ async function renderHistory() {
     wrap.appendChild(el);
   };
   if (!st || st.error) note(historyErrorText());
-  else if (st.enabled && st.dirty) {
-    note((st.last ? `Unsaved changes since “${historyLabel(st.last)}”, ${historyAgo(st.last.date)}` : 'Unsaved changes') +
-      ` — ${KCHECK} saves a checkpoint.`);
+  else {
+    if (st.enabled && st.dirty) {
+      note((st.last ? `Unsaved changes since “${historyLabel(st.last)}”, ${historyAgo(st.last.date)}` : 'Unsaved changes') +
+        ` — ${KCHECK} saves a checkpoint.`);
+    }
+    if (st.diverged) note('This draft was also saved on another device. Your next version brings both together, and nothing from either is lost.');
+  }
+  if (historyView.compare) {
+    await historyCompareBox(wrap, drafts);
+    if (seq !== historyRenderSeq || book !== b) return;
   }
   if (!lg || lg.error) { note(historyErrorText(), 'darlings-empty'); return; }
   if (!lg.entries.length) {
@@ -5578,6 +5592,9 @@ function historyCard(c, st) {
   }
   const touched = historyTouched(c);
   if (touched) bits.push(touched);
+  if (st && c.branch && c.branch !== st.branch) {
+    bits.push('in ' + ((historyView.branchNames || {})[c.branch] || 'another draft'));
+  }
   const msg = document.createElement('div');
   msg.className = 'h-msg';
   msg.textContent = historyLabel(c);
@@ -5616,9 +5633,11 @@ function historyTreeSide(bookId, t) {
   };
 }
 
-async function renderHistoryDiff(el, c) {
+// opts.lock: always "compare with now", with no mode switch and no
+// whole-book restore (used when comparing against another draft)
+async function renderHistoryDiff(el, c, opts = {}) {
   const b = book;
-  const mode = historyView.mode;
+  const mode = opts.lock ? 'now' : historyView.mode;
   el.innerHTML = '<div class="h-note">Reading this version…</div>';
   const mine = await window.neo.historyReadTree(b.id, c.tree);
   if (book !== b || !el.isConnected) return;
@@ -5657,23 +5676,30 @@ async function renderHistoryDiff(el, c) {
   el.innerHTML = '';
   const bar = document.createElement('div');
   bar.className = 'h-diff-bar';
-  for (const [m, label] of [['now', 'Compare with now'], ['parent', 'What changed in this version']]) {
-    const btn = document.createElement('button');
-    btn.textContent = label;
-    btn.classList.toggle('active', m === mode);
-    btn.onclick = () => { historyView.mode = m; renderHistoryDiff(el, c); };
-    bar.appendChild(btn);
+  if (!opts.lock) {
+    for (const [m, label] of [['now', 'Compare with now'], ['parent', 'What changed in this version']]) {
+      const btn = document.createElement('button');
+      btn.textContent = label;
+      btn.classList.toggle('active', m === mode);
+      btn.onclick = () => { historyView.mode = m; renderHistoryDiff(el, c); };
+      bar.appendChild(btn);
+    }
+    const grow = document.createElement('span');
+    grow.className = 'h-grow';
+    bar.appendChild(grow);
+    const fork = document.createElement('button');
+    fork.textContent = 'New draft from here…';
+    fork.title = 'Start an alternate draft from this version. The draft you’re in stays exactly as it is.';
+    fork.onclick = () => historyStartDraft(c);
+    bar.appendChild(fork);
+    if (!(mode === 'now' && !changed)) {
+      const all = document.createElement('button');
+      all.textContent = 'Restore whole book…';
+      all.onclick = () => historyRestoreBook(c);
+      bar.appendChild(all);
+    }
+    el.appendChild(bar);
   }
-  const grow = document.createElement('span');
-  grow.className = 'h-grow';
-  bar.appendChild(grow);
-  if (!(mode === 'now' && !changed)) {
-    const all = document.createElement('button');
-    all.textContent = 'Restore whole book…';
-    all.onclick = () => historyRestoreBook(c);
-    bar.appendChild(all);
-  }
-  el.appendChild(bar);
 
   const ids = [];
   if (changed) {
@@ -5722,12 +5748,25 @@ async function renderHistoryDiff(el, c) {
       body.innerHTML = '<div class="h-note">…</div>';
       try {
         const [a, n] = await Promise.all([oldSide.html(id), newSide.html(id)]);
-        let html = historyParaDiffHtml(a || '', n || '');
+        // paragraphs can only be carried into a chapter that's in the book now
+        const d = historyParaDiff(a || '', n || '', { take: mode === 'now' && !removed });
+        let html = d.html;
         const t0 = oldSide.titles[id] || '', t1 = newSide.titles[id] || '';
         if (t0 !== t1 && !added && !removed) {
           html = `<div class="h-note">Title: <del class="h-del">${escHtml(t0 || 'untitled')}</del> → <ins class="h-ins">${escHtml(t1 || 'untitled')}</ins></div>` + html;
         }
         body.innerHTML = html;
+        body.querySelectorAll('.h-take').forEach((btn) => {
+          btn.onclick = async (e) => {
+            e.stopPropagation();
+            const withK = btn.dataset.with !== undefined ? +btn.dataset.with : undefined;
+            if (await historyTake(id, d, +btn.dataset.k, withK)) {
+              loaded = false;
+              body.hidden = true;
+              expand(); // redraw the chapter as it now stands
+            }
+          };
+        });
       } catch (err) {
         body.innerHTML = `<div class="h-note">${escHtml(historyErrorText(err.message))}</div>`;
       }
@@ -5741,12 +5780,30 @@ async function renderHistoryDiff(el, c) {
 
 // Paragraph diff with word-level marks inside revised paragraphs. Long
 // unchanged stretches collapse, keeping one paragraph of context each side.
-function historyParaDiffHtml(oldHtml, newHtml) {
+// With opts.take, paragraphs only the old side has get a "take this".
+// Returns {html, ops, A, B}, with A and B from parasFromHtml.
+const historyParaKey = (p) => (p.sceneBreak ? '⁂' : p.html);
+function historyParaDiff(oldHtml, newHtml, opts = {}) {
   const A = parasFromHtml(oldHtml), B = parasFromHtml(newHtml);
-  const key = (p) => (p.sceneBreak ? '⁂' : p.html);
   const text = (p) => (p.sceneBreak ? '* * *' : p.text);
-  const ops = NeoDiff.diffParagraphs(A.map(key), B.map(key), A.map(text), B.map(text));
-  if (ops.every((o) => o.op === 'eq')) return '<div class="h-note">No differences in the text.</div>';
+  const ops = NeoDiff.diffParagraphs(A.map(historyParaKey), B.map(historyParaKey), A.map(text), B.map(text));
+  const done = (html) => ({ html, ops, A, B });
+  if (ops.every((o) => o.op === 'eq')) return done('<div class="h-note">No differences in the text.</div>');
+  const take = (k, what) => (opts.take ? ` <button class="h-take" data-k="${k}" title="${what}">take this</button>` : '');
+  // a paragraph rewritten past recognition shows as struck + green; the
+  // struck one can also replace its green counterpart in the same spot
+  const counterpart = {};
+  for (let k = 0; k < ops.length;) {
+    if (ops[k].op === 'eq') { k++; continue; }
+    const dels = [], ins = [];
+    for (; k < ops.length && ops[k].op !== 'eq'; k++) {
+      if (ops[k].op === 'del') dels.push(k); else if (ops[k].op === 'ins') ins.push(k);
+    }
+    dels.forEach((dk, i) => { if (ins[i] !== undefined) counterpart[dk] = ins[i]; });
+  }
+  const swap = (k) => (opts.take && counterpart[k] !== undefined
+    ? ` <button class="h-take" data-k="${k}" data-with="${counterpart[k]}" title="Put this paragraph back in place of the green one">use instead</button>`
+    : '');
   const changedAt = ops.map((o) => o.op !== 'eq');
   const cls = (p) => 'h-p' + (p.sceneBreak ? ' h-break' : '') + (p.poetry ? ' h-poetry' : '');
   let out = '', skipped = 0;
@@ -5763,18 +5820,225 @@ function historyParaDiffHtml(oldHtml, newHtml) {
     }
     flushSkip();
     if (o.op === 'del') {
-      out += `<p class="${cls(A[o.a])}"><del class="h-del">${escHtml(text(A[o.a]))}</del></p>`;
+      out += `<p class="${cls(A[o.a])}"><del class="h-del">${escHtml(text(A[o.a]))}</del>${take(k, 'Put this paragraph back into your book, here')}${swap(k)}</p>`;
     } else if (o.op === 'ins') {
       out += `<p class="${cls(B[o.b])}"><ins class="h-ins">${escHtml(text(B[o.b]))}</ins></p>`;
     } else {
       const words = NeoDiff.diffWords(text(A[o.a]), text(B[o.b]));
       const inner = words.map((w) => (w.op === 'eq' ? escHtml(w.text) : `<${w.op} class="h-${w.op}">${escHtml(w.text)}</${w.op}>`)).join('');
       const fmtOnly = words.every((w) => w.op === 'eq');
-      out += `<p class="${cls(B[o.b])}">${inner}${fmtOnly ? ' <span class="h-fmt">(formatting changed)</span>' : ''}</p>`;
+      out += `<p class="${cls(B[o.b])}">${inner}${fmtOnly ? ' <span class="h-fmt">(formatting changed)</span>' : ''}${take(k, 'Use this version’s wording for this paragraph')}</p>`;
     }
   });
   flushSkip();
-  return out;
+  return done(out);
+}
+
+// "take this": carry one paragraph from an older version (or another
+// draft) into the live chapter, either replacing its revised counterpart
+// or slotting in after the paragraph it used to follow. ⌘Z undoes it.
+async function historyTake(chId, d, k, withK) {
+  const o = d.ops[k];
+  const body = document.querySelector(`.chapter[data-id="${chId}"] .chapter-body`);
+  if (!o || !body || (o.op !== 'del' && o.op !== 'mod')) return false;
+  // the diff was drawn from the chapter as it was; make sure it still is
+  const now = parasFromHtml(captureBody(body));
+  if (now.length !== d.B.length || now.some((p, i) => historyParaKey(p) !== historyParaKey(d.B[i]))) {
+    toast('The chapter changed since this comparison was drawn — try again');
+    renderHistory();
+    return false;
+  }
+  const live = [...body.querySelectorAll('p')];
+  const incoming = d.A[o.a].outer;
+  snapshotStructure('take paragraph');
+  const replaces = o.op === 'mod' ? o.b : (withK !== undefined && d.ops[withK] ? d.ops[withK].b : undefined);
+  if (replaces !== undefined) {
+    const el = live[d.B[replaces].idx];
+    el.insertAdjacentHTML('afterend', incoming);
+    el.remove();
+  } else {
+    // after the nearest paragraph both sides share, above this one
+    let anchor = null;
+    for (let j = k - 1; j >= 0; j--) {
+      if (d.ops[j].b !== undefined) { anchor = live[d.B[d.ops[j].b].idx]; break; }
+    }
+    if (anchor) anchor.insertAdjacentHTML('afterend', incoming);
+    else if (d.B.length) live[d.B[0].idx].insertAdjacentHTML('beforebegin', incoming);
+    else body.innerHTML = incoming; // an empty chapter takes it whole
+  }
+  syncChapter(body, chId);
+  toast(`Paragraph brought over — ${KZ} undoes it`, 2500);
+  return true;
+}
+
+// ---- drafts (branches) ----
+// The drafts menu in the History header: switch, start, compare, rename,
+// archive. A <select> keeps it as quiet as the rest of the page.
+function historyDraftSelect(drafts, st) {
+  const sel = document.createElement('select');
+  sel.title = 'Drafts: alternate versions of this book you can switch between';
+  const current = (st && st.branch) || 'b-main';
+  const live = drafts.filter((d) => !d.archived || d.id === current);
+  const archived = drafts.filter((d) => d.archived && d.id !== current);
+  const opt = (value, label) => `<option value="${escHtml(value)}">${escHtml(label)}</option>`;
+  let html = live.length ? live.map((d) => opt('b:' + d.id, d.name + (d.diverged ? ' (saved on two devices)' : ''))).join('')
+    : opt('b:' + current, (st && st.branchName) || 'Main draft');
+  if (archived.length) html += `<optgroup label="Archived">${archived.map((d) => opt('b:' + d.id, d.name)).join('')}</optgroup>`;
+  html += '<optgroup label="──────────">' + opt('new', 'New draft from here…');
+  if (drafts.length > 1) html += opt('compare', 'Compare with another draft…');
+  html += opt('rename', 'Rename this draft…');
+  if (current !== 'b-main') html += opt('archive', 'Archive this draft…');
+  html += '</optgroup>';
+  sel.innerHTML = html;
+  sel.value = 'b:' + current;
+  sel.onchange = async () => {
+    const v = sel.value;
+    sel.value = 'b:' + current;
+    const byId = Object.fromEntries(drafts.map((d) => [d.id, d]));
+    if (v.startsWith('b:')) {
+      const d = byId[v.slice(2)];
+      if (d && d.id !== current) await historySwitchDraft(d);
+    } else if (v === 'new') {
+      await historyStartDraft(null);
+    } else if (v === 'compare') {
+      const others = drafts.filter((d) => d.id !== current);
+      const pick = others.length === 1 ? others[0].id : await optionModal('Compare with which draft?', '',
+        others.map((d) => ({ label: d.name, desc: `Last saved ${historyAgo(d.lastDate)}`, value: d.id })));
+      if (pick) { historyView.compare = pick; historyView.open = null; renderHistory(); }
+    } else if (v === 'rename') {
+      const name = await askInput('Rename this draft', 'Draft name', (byId[current] && byId[current].name) || '');
+      if (name) {
+        const r = await window.neo.historyBranchRename(book.id, current, name);
+        if (r && r.error) toast('Couldn’t rename the draft — details are in the error log');
+        refreshHistoryStatus();
+        renderHistory();
+      }
+    } else if (v === 'archive') {
+      const d = byId[current];
+      const ok = await optionModal(`Archive “${escHtml(d ? d.name : 'this draft')}”?`,
+        'It moves to the bottom of the drafts menu, with every version intact, and you go back to the Main draft. Pick it from the menu anytime to bring it back.',
+        [{ label: 'Archive and switch to Main draft', value: 'yes' }]);
+      if (ok !== 'yes') return;
+      const main = byId['b-main'];
+      if (main && await historySwitchDraft(main)) {
+        await window.neo.historyBranchArchive(book.id, current, true);
+        renderHistory();
+      }
+    }
+  };
+  return sel;
+}
+
+// Read a version in full before anything changes: a draft that can't be
+// read completely is never half-applied.
+async function historyReadWhole(bookId, commitId) {
+  const c = await window.neo.historyReadCommit(bookId, commitId);
+  if (!c || c.error) return { error: 'syncing' };
+  const t = await window.neo.historyReadTree(bookId, c.tree);
+  if (t.error) return t;
+  const html = {};
+  for (const id of t.tree.order) {
+    const r = await window.neo.historyReadBlob(bookId, t.tree.chapters[id], 'html');
+    if (r.error) return r;
+    html[id] = r.content;
+  }
+  return { commit: c, tree: t.tree, notes: t.notes, html };
+}
+
+// After a draft change the undo stack is cleared: ⌘Z must never carry one
+// draft's words into another.
+async function historyEnterDraft(branchId, base) {
+  const head = historyHead();
+  head.branch = branchId;
+  head.base = base;
+  await saveMeta();
+  undoStack = [];
+  historyHints = [];
+  historyView.open = null;
+  historyView.compare = null;
+  await refreshHistoryStatus();
+  if (currentTab === 'history') renderHistory();
+}
+
+// Switch to another draft. What you had is saved as a version of the draft
+// you're leaving, so switching back finds it exactly as you left it.
+async function historySwitchDraft(d) {
+  if (!HAS_HISTORY || !book) return false;
+  const b = book;
+  let tip = d.tips && d.tips[0];
+  if (d.tips && d.tips.length > 1) {
+    const choices = [];
+    for (const id of d.tips) {
+      const c = await window.neo.historyReadCommit(b.id, id);
+      if (c && !c.error) choices.push({ label: historyLabel(c), desc: historyWhen(c.date), value: id });
+    }
+    tip = await optionModal(`“${escHtml(d.name)}” was saved on two devices`, 'Open which one? Your next version in this draft brings them both together.', choices);
+    if (!tip) return false;
+  }
+  if (!tip) { toast('That draft has no versions yet'); return false; }
+  const whole = await historyReadWhole(b.id, tip);
+  if (whole.error) { toast(historyErrorText(whole.error)); return false; }
+  if (book !== b) return false;
+  const left = await historyCommitNow({ kind: 'auto', auto: 'switch', message: `Before switching to “${d.name}”` });
+  if (left && left.error) { toast('Couldn’t save your current draft first, so nothing was switched'); return false; }
+  if (book !== b) return false;
+  await historyApplyTree(whole.tree, whole.notes, whole.html);
+  if (d.archived) await window.neo.historyBranchArchive(b.id, d.id, false);
+  await historyEnterDraft(d.id, tip);
+  toast(`Now writing in “${d.name}”`, 3000);
+  return true;
+}
+
+// Start a draft, either from the book as it is now (c = null) or from an
+// older version. The draft you're leaving keeps everything, including
+// words written since its last version.
+async function historyStartDraft(c) {
+  if (!HAS_HISTORY || !book) return;
+  const b = book;
+  const name = await askInput(c ? 'New draft from this version' : 'New draft from here', 'Name it, e.g. Darker ending');
+  if (!name) return;
+  let whole = null;
+  if (c) {
+    whole = await historyReadWhole(b.id, c.id);
+    if (whole.error) { toast(historyErrorText(whole.error)); return; }
+  }
+  if (book !== b) return;
+  const leaving = (historyState && historyState.branchName) || 'your current draft';
+  const left = await historyCommitNow({ kind: 'auto', auto: 'switch', message: `Before starting the draft “${name}”` });
+  if (left && left.error) { toast('Couldn’t save your current draft first, so no new draft was started'); return; }
+  if (book !== b) return;
+  const from = c ? c.id : historyHead().base;
+  const br = await window.neo.historyBranchCreate(b.id, { name, from });
+  if (!br || br.error) { toast('Couldn’t start the draft — details are in the error log'); return; }
+  if (whole) await historyApplyTree(whole.tree, whole.notes, whole.html);
+  await historyEnterDraft(br.id, from);
+  toast(`Now writing in “${name}” — “${leaving}” is kept just as it was`, 4000);
+}
+
+// "Compare with another draft": that draft's latest version against your
+// book now, with Restore chapter and Take this, but no whole-book restore.
+async function historyCompareBox(wrap, drafts) {
+  const d = drafts.find((x) => x.id === historyView.compare);
+  const tip = d && d.tips && d.tips[0];
+  const c = tip ? await window.neo.historyReadCommit(book.id, tip) : null;
+  if (!d || !c || c.error) { historyView.compare = null; return; }
+  const box = document.createElement('div');
+  box.className = 'h-commit named open h-compare';
+  const msg = document.createElement('div');
+  msg.className = 'h-msg';
+  msg.textContent = `Comparing with “${d.name}”`;
+  const meta = document.createElement('div');
+  meta.className = 'd-meta';
+  meta.innerHTML = `<span>its latest version: ${escHtml(historyLabel(c))} · ${escHtml(historyWhen(c.date))}</span>`;
+  const close = document.createElement('button');
+  close.textContent = 'Done';
+  close.onclick = () => { historyView.compare = null; renderHistory(); };
+  meta.appendChild(close);
+  const diff = document.createElement('div');
+  diff.className = 'h-diff';
+  box.append(msg, meta, diff);
+  wrap.appendChild(box);
+  await renderHistoryDiff(diff, c, { lock: true });
 }
 
 // ---- restoring ----
